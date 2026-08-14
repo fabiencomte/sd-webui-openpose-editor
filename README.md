@@ -2,6 +2,28 @@
 This extension is specifically build to be integrated into Stable Diffusion 
 WebUI's ControlNet extension.
 
+## Forge Classic 2.28.1 fork
+
+The original editor was a cool and useful tool, but some details no longer
+worked reliably in my **sd-webui-forge-classic 2.28.1** setup. I migrated and
+hardened it with a little help from AI, and I hope sharing the result will be
+useful to other people in the community.
+
+This fork fixes OpenPose points located exactly on the top or left canvas edge,
+preserves non-binary detector confidence values, validates iframe messages,
+and makes the frontend updater bounded, zip-slip safe, and atomic. The POST
+entry point also transports pose JSON as inert `application/json` instead of
+injecting it as executable JavaScript.
+
+Install this Forge-compatible branch with:
+
+```text
+https://github.com/fabiencomte/sd-webui-openpose-editor.git
+```
+
+The compiled frontend is downloaded only from the matching release of this
+fork. It is never replaced with an upstream build that lacks these fixes.
+
 ![editor](https://github.com/huchenlei/sd-webui-openpose-editor/assets/20929282/c69199e2-5676-4609-87bc-af7499b1c4bd)
 
 # Translations of README.md
@@ -23,8 +45,9 @@ poor internet connection, or have hard time connecting to github.io domain.
 ![installation_guide](/readme_assets/install_guide.png)
 ![restart_ui_guide](/readme_assets/restart_ui_guide.png)
 
-On UI restart, the extension will try to download the compiled Vue app from
-Github. Check whether `stable-diffusion-webui\extensions\sd-webui-openpose-editor\dist`
+On UI restart, the extension will try to download the compiled Vue app for the
+exact checked-out version from this fork's GitHub release. Check whether
+`stable-diffusion-webui\extensions\sd-webui-openpose-editor\dist`
 exists and has content in it. 
 
 Some users in China have reported having issue downloading dist with the autoupdate
@@ -37,7 +60,7 @@ Run `npm run build` to compile the application.
 
 ### Option2: Download the compiled application
 You can download the compiled application(`dist.zip`) from the 
-[release](https://github.com/huchenlei/sd-webui-openpose-editor/releases) page. 
+[release](https://github.com/fabiencomte/sd-webui-openpose-editor/releases) page.
 Unzip the package in the repository root and make sure hte unziped directory is 
 named `dist`.
 

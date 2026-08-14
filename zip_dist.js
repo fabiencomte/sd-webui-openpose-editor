@@ -1,6 +1,7 @@
+/* eslint-env node */
 const zipdir = require('zip-dir');
 
-zipdir('./dist', { saveTo: './dist.zip' }, function (err, buffer) {
+zipdir('./dist', { saveTo: './dist.zip' }, function (err) {
   if (err) {
     console.error('Error zipping "dist" directory:', err);
   } else {

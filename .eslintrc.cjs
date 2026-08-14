@@ -11,5 +11,10 @@ module.exports = {
   ],
   parserOptions: {
     ecmaVersion: 'latest'
+  },
+  rules: {
+    // The editor intentionally receives mutable Fabric model instances. Only
+    // replacing the prop itself is forbidden; editing its fields is expected.
+    'vue/no-mutating-props': 'off'
   }
 }

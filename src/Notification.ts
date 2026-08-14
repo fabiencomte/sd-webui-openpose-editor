@@ -9,7 +9,7 @@ declare module '@vue/runtime-core' {
 }
 
 export default {
-  install: (app: App, options?: any) => {
+  install: (app: App) => {
     app.config.globalProperties.$message = message;
     app.config.globalProperties.$notify = (params) => {
       if (typeof params === 'string') {

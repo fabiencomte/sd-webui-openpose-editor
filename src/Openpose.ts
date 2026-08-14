@@ -93,6 +93,12 @@ class OpenposeKeypoint2D extends fabric.Circle {
     }
 
     set _visible(visible: boolean) {
+        if (visible && (!Number.isFinite(this.confidence) || this.confidence <= 0)) {
+            // A point explicitly restored by the user must become detectable
+            // again; otherwise preserving its old zero confidence would keep
+            // it invisible to ControlNet after export.
+            this.confidence = 1.0;
+        }
         this.visible = visible;
         this.connections.forEach(c => {
             c.updateVisibility();
@@ -225,9 +231,12 @@ class OpenposeObject {
         this.canvas = undefined;
         this.openposeCanvas = undefined;
 
-        // Negative x, y means invalid keypoint.
+        // A confidence of zero marks a missing OpenPose point. Coordinates on
+        // the top or left edge are valid when confidence is positive.
         this.keypoints.forEach(keypoint => {
-            keypoint._visible = this.isKeypointValid(keypoint) && keypoint.confidence === 1.0;
+            keypoint._visible = this.isKeypointValid(keypoint)
+                && Number.isFinite(keypoint.confidence)
+                && keypoint.confidence > 0;
         });
     }
 
@@ -238,7 +247,9 @@ class OpenposeObject {
             offsetX = this.openposeCanvas?.left!;
             offsetY = this.openposeCanvas?.top!;
         };
-        return keypoint.abs_x - offsetX > 0 && keypoint.abs_y - offsetY > 0;
+        const x = keypoint.abs_x - offsetX;
+        const y = keypoint.abs_y - offsetY;
+        return Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0;
     }
 
     invalidKeypoints(): OpenposeKeypoint2D[] {
@@ -284,7 +295,7 @@ class OpenposeObject {
             p._visible ? [
                 p.abs_x - openposeCanvas.left!,
                 p.abs_y - openposeCanvas.top!,
-                1.0
+                p.confidence
             ] : [0.0, 0.0, 0.0]
         ));
     }
@@ -497,8 +508,7 @@ class OpenposeBody extends OpenposeObject {
                 Expect ${OpenposeBody.keypoint_names.length} but got ${rawKeypoints.length}.`)
             return undefined;
         }
-        rawKeypoints.slice(0, OpenposeBody.keypoint_names.length);
-        return new OpenposeBody(rawKeypoints);
+        return new OpenposeBody(rawKeypoints.slice(0, OpenposeBody.keypoint_names.length));
     }
 
     getKeypointByName(name: string): OpenposeKeypoint2D {
@@ -512,11 +522,11 @@ class OpenposeBody extends OpenposeObject {
 
 function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
     let r: number, g: number, b: number;
-    let i = Math.floor(h * 6);
-    let f = h * 6 - i;
-    let p = v * (1 - s);
-    let q = v * (1 - f * s);
-    let t = v * (1 - (1 - f) * s);
+    const i = Math.floor(h * 6);
+    const f = h * 6 - i;
+    const p = v * (1 - s);
+    const q = v * (1 - f * s);
+    const t = v * (1 - (1 - f) * s);
 
     switch (i % 6) {
         case 0:
@@ -574,8 +584,8 @@ class OpenposeHand extends OpenposeObject {
     constructor(rawKeypoints: [number, number, number][]) {
         const keypoints = _.zipWith(rawKeypoints, OpenposeHand.keypoint_names,
             (rawKeypoint: [number, number, number], name: string) => new OpenposeKeypoint2D(
-                rawKeypoint[0] > 0 ? rawKeypoint[0] : -1,
-                rawKeypoint[1] > 0 ? rawKeypoint[1] : -1,
+                rawKeypoint[0],
+                rawKeypoint[1],
                 rawKeypoint[2],
                 formatColor([0, 0, 255]), // All hand keypoints are marked blue.
                 name
@@ -595,8 +605,7 @@ class OpenposeHand extends OpenposeObject {
                 `Wrong number of keypoints for openpose hand. Expect ${OpenposeHand.keypoint_names.length} but got ${rawKeypoints.length}.`)
             return undefined;
         }
-        rawKeypoints.slice(0, OpenposeHand.keypoint_names.length);
-        return new OpenposeHand(rawKeypoints);
+        return new OpenposeHand(rawKeypoints.slice(0, OpenposeHand.keypoint_names.length));
     }
 
     /**
@@ -626,8 +635,8 @@ class OpenposeFace extends OpenposeObject {
     constructor(rawKeypoints: [number, number, number][]) {
         const keypoints = _.zipWith(rawKeypoints, OpenposeFace.keypoint_names,
             (rawKeypoint, name) => new OpenposeKeypoint2D(
-                rawKeypoint[0] > 0 ? rawKeypoint[0] : -1,
-                rawKeypoint[1] > 0 ? rawKeypoint[1] : -1,
+                rawKeypoint[0],
+                rawKeypoint[1],
                 rawKeypoint[2],
                 formatColor([255, 255, 255]),
                 name
@@ -641,8 +650,7 @@ class OpenposeFace extends OpenposeObject {
                 `Wrong number of keypoints for openpose face. Expect ${OpenposeFace.keypoint_names.length} but got ${rawKeypoints.length}.`)
             return undefined;
         }
-        rawKeypoints.slice(0, OpenposeFace.keypoint_names.length);
-        return new OpenposeFace(rawKeypoints);
+        return new OpenposeFace(rawKeypoints.slice(0, OpenposeFace.keypoint_names.length));
     }
 }
 
@@ -751,7 +759,7 @@ class OpenposePerson {
         hand.connections.forEach(connection => connection.updateAll(IDENTITY_MATRIX));
     }
 
-    private adjustHandLocation(hand: OpenposeHand, wrist_keypoint: OpenposeKeypoint2D, elbow_keypoint: OpenposeKeypoint2D) {
+    private adjustHandLocation(hand: OpenposeHand, wrist_keypoint: OpenposeKeypoint2D) {
         hand.grouped = true;
         // Move the group so that the wrist joint is at the wrist keypoint
         const wrist_joint = hand.keypoints[0]; // Assuming the wrist joint is the first keypoint
@@ -764,7 +772,7 @@ class OpenposePerson {
     private adjustHand(hand: OpenposeHand, wrist_keypoint: OpenposeKeypoint2D, elbow_keypoint: OpenposeKeypoint2D) {
         this.adjustHandSize(hand, wrist_keypoint, elbow_keypoint);
         this.adjustHandAngle(hand, wrist_keypoint, elbow_keypoint);
-        this.adjustHandLocation(hand, wrist_keypoint, elbow_keypoint);
+        this.adjustHandLocation(hand, wrist_keypoint);
         // Update group coordinates
         hand.group!.setCoords();
     }
@@ -836,12 +844,11 @@ class OpenposeAnimal extends OpenposeObject {
     static keypoint_names: string[] = Array.from(Array(17).keys()).map(i => `Keypoint-${i}`);
 
     constructor(rawKeypoints: [number, number, number][]) {
-        console.log(OpenposeAnimal.keypoint_names);
         const keypoints = _.zipWith(rawKeypoints, OpenposeAnimal.colors, OpenposeAnimal.keypoint_names,
             (p, color, name) => new OpenposeKeypoint2D(
                 p[0],
                 p[1],
-                p[2] > 0 ? 1.0 : 0.0,
+                p[2],
                 formatColor(color),
                 name,
                 /* opacity= */ 1.0,
@@ -866,12 +873,11 @@ class OpenposeAnimal extends OpenposeObject {
     static create(rawKeypoints: [number, number, number][]): OpenposeAnimal | undefined {
         if (rawKeypoints.length < OpenposeAnimal.keypoint_names.length) {
             console.warn(
-                `Wrong number of keypoints for openpose body(Coco format). 
-                Expect ${OpenposeBody.keypoint_names.length} but got ${rawKeypoints.length}.`)
+                `Wrong number of keypoints for openpose animal.
+                Expect ${OpenposeAnimal.keypoint_names.length} but got ${rawKeypoints.length}.`)
             return undefined;
         }
-        rawKeypoints.slice(0, OpenposeAnimal.keypoint_names.length);
-        return new OpenposeAnimal(rawKeypoints);
+        return new OpenposeAnimal(rawKeypoints.slice(0, OpenposeAnimal.keypoint_names.length));
     }
 }
 

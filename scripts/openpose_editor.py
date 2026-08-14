@@ -1,106 +1,48 @@
 import os
-import zipfile
-import gradio as gr
-import requests
-import json
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
-from typing import Optional
+import gradio as gr
+from pydantic import BaseModel, Field
 
 import modules.script_callbacks as script_callbacks
 from modules import shared, scripts
+from openpose_editor_backend import (
+    install_release,
+    need_update,
+    read_package_version,
+    read_version_file,
+)
 
 
 class Item(BaseModel):
     # image url.
-    image_url: str
+    image_url: str = Field(max_length=20_000_000)
     # stringified pose JSON.
-    pose: str
+    pose: str = Field(max_length=10_000_000)
 
 
 EXTENSION_DIR = scripts.basedir()
-DIST_DIR = os.path.join(EXTENSION_DIR, 'dist')
-
-
-def get_latest_release(owner, repo) -> Optional[str]:
-    url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    response = requests.get(url)
-    data = response.json()
-    if response.status_code == 200:
-        return data["tag_name"]
-    else:
-        return None
-
-
-def get_current_release() -> Optional[str]:
-    if not os.path.exists(DIST_DIR):
-        return None
-
-    with open(os.path.join(DIST_DIR, "version.txt"), "r") as f:
-        return f.read()
-
-
-def get_version_from_package_json():
-    with open(os.path.join(EXTENSION_DIR, "package.json")) as f:
-        data = json.load(f)
-        return f"v{data.get('version', None)}"
-
-
-def download_latest_release(owner, repo):
-    url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-    response = requests.get(url)
-    data = response.json()
-
-    if response.status_code == 200 and "assets" in data and len(data["assets"]) > 0:
-        asset_url = data["assets"][0]["url"]  # Get the URL of the first asset
-        headers = {"Accept": "application/octet-stream"}
-        response = requests.get(asset_url, headers=headers, allow_redirects=True)
-
-        if response.status_code == 200:
-            filename = "dist.zip"
-            with open(filename, "wb") as file:
-                file.write(response.content)
-
-            # Unzip the file
-            with zipfile.ZipFile(filename, "r") as zip_ref:
-                zip_ref.extractall(DIST_DIR)
-
-            # Remove the zip file
-            os.remove(filename)
-        else:
-            print(f"Failed to download the file {url}.")
-    else:
-        print(f"Could not get the latest release or there are no assets {url}.")
-
-
-def need_update(current_version: Optional[str], package_version: str) -> bool:
-    if current_version is None:
-        return True
-    
-    def parse_version(version: str):
-        return tuple(int(num) for num in version[1:].split('.'))
-    
-    return parse_version(current_version) < parse_version(package_version)
+DIST_DIR = os.path.join(EXTENSION_DIR, "dist")
+RELEASE_OWNER = "fabiencomte"
+RELEASE_REPO = "sd-webui-openpose-editor"
 
 
 def update_app():
-    """Attempts to update the application to latest version"""
-    owner = "huchenlei"
-    repo = "sd-webui-openpose-editor"
-
-    package_version = get_version_from_package_json()
-    current_version = get_current_release()
-
-    assert package_version is not None
+    """Install the exact frontend version expected by this checkout."""
+    extension_dir = Path(EXTENSION_DIR)
+    package_version = read_package_version(extension_dir)
+    current_version = read_version_file(Path(DIST_DIR))
     if need_update(current_version, package_version):
-        download_latest_release(owner, repo)
+        install_release(extension_dir, RELEASE_OWNER, RELEASE_REPO, package_version)
 
 
 def mount_openpose_api(_: gr.Blocks, app: FastAPI):
     if not getattr(shared.cmd_opts, "disable_openpose_editor_auto_update", False):
+        # Fail closed: serving a stale upstream bundle would silently discard
+        # the Forge fixes implemented by the checked-out Python wrapper.
         update_app()
 
     templates = Jinja2Templates(directory=DIST_DIR)
@@ -113,13 +55,18 @@ def mount_openpose_api(_: gr.Blocks, app: FastAPI):
     @app.get("/openpose_editor_index", response_class=HTMLResponse)
     async def index_get(request: Request):
         return templates.TemplateResponse(
-            "index.html", {"request": request, "data": {}}
+            request=request,
+            name="index.html",
+            context={"data": {}},
         )
 
     @app.post("/openpose_editor_index", response_class=HTMLResponse)
     async def index_post(request: Request, item: Item):
+        data = item.model_dump() if hasattr(item, "model_dump") else item.dict()
         return templates.TemplateResponse(
-            "index.html", {"request": request, "data": item.dict()}
+            request=request,
+            name="index.html",
+            context={"data": data},
         )
 
 

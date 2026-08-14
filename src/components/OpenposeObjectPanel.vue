@@ -88,7 +88,7 @@ export default {
         removeObject() {
             this.$emit("removeObject", this.object);
         },
-        onVisibleChange(visible: boolean) {
+        onVisibleChange() {
             this.$nextTick(() => {
                 // Now, call renderAll() after the visibility updates are done
                 this.object.canvas?.renderAll();

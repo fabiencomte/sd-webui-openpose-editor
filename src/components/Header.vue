@@ -3,12 +3,12 @@ import { GithubOutlined, StarOutlined } from '@ant-design/icons-vue';
 import { onMounted, ref } from 'vue';
 
 export default {
-    name: 'Header',
+    name: 'AppHeader',
     components: {
         GithubOutlined,
         StarOutlined,
     },
-    setup(props) {
+    setup() {
         let stars = ref<number | null>(null);
         onMounted(async () => {
             const repoOwner = "huchenlei";

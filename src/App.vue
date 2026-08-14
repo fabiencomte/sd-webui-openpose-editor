@@ -3,7 +3,7 @@ import { defineComponent, type UnwrapRef, reactive, markRaw, toRaw } from 'vue';
 import { fabric } from 'fabric';
 import { PlusSquareOutlined, CloseOutlined, UploadOutlined, DownloadOutlined } from '@ant-design/icons-vue';
 import OpenposeObjectPanel from './components/OpenposeObjectPanel.vue';
-import Header from './components/Header.vue';
+import AppHeader from './components/Header.vue';
 import {
   OpenposePerson,
   OpenposeBody,
@@ -19,6 +19,14 @@ import type { UploadFile } from 'ant-design-vue';
 import LockSwitch from './components/LockSwitch.vue';
 import _ from 'lodash';
 import CryptoJS from 'crypto-js';
+import {
+  getParentOrigin,
+  isTrustedFrameEvent,
+  parsePoseDataURL,
+  readServerData,
+  type IncomingFrameMessage,
+  type OutgoingFrameMessage,
+} from './frameMessages';
 
 interface LockableUploadFile extends UploadFile {
   locked: boolean;
@@ -49,22 +57,7 @@ interface AppData {
 
   // The modal id to post message back to.
   modalId: string | undefined;
-};
-
-/**
- * The frame message from the main frame (ControlNet).
- */
-interface IncomingFrameMessage {
-  modalId: string;
-  imageURL?: string;
-  poseURL?: string;
-  poses?: IOpenposeJson | IOpenposeJson[];
-};
-
-interface OutgoingFrameMessage {
-  modalId: string;
-  poseURL: string;
-  poses: IOpenposeJson;
+  parentOrigin: string | null;
 };
 
 const default_body_keypoints: [number, number, number][] = [
@@ -87,7 +80,7 @@ const default_left_hand_keypoints: [number, number, number][] = [
     1
   ],
   [
-    26.000015258789062,
+    26.00001525878906,
     109.6749968987715,
     1
   ],
@@ -296,13 +289,6 @@ const default_face_keypoints: [number, number, number][] = [];
 // identity_metrics * point == point.
 const IDENTITY_MATRIX = [1, 0, 0, 1, 0, 0];
 
-function parseDataURLtoJSON(dataURL: string): any {
-  const data = dataURL.split(',')[1]; // Extract the data portion
-  const decodedData = atob(data); // Decode the data
-  const json = JSON.parse(decodedData); // Parse the decoded data as JSON
-  return json;
-}
-
 function serializeJSONtoDataURL(data: any): string {
   return "data:application/json;base64," + btoa(JSON.stringify(data));
 }
@@ -349,6 +335,7 @@ export default defineComponent({
       activePersonId: undefined,
       activeBodyPart: undefined,
       modalId: undefined,
+      parentOrigin: getParentOrigin(document.referrer, window.location.origin),
     };
   },
   setup() {
@@ -356,7 +343,7 @@ export default defineComponent({
   },
   mounted() {
     this.$nextTick(() => {
-      this.canvas = markRaw(new fabric.Canvas(<HTMLCanvasElement>this.$refs.editorCanvas, {
+      this.canvas = markRaw(new fabric.Canvas(this.$refs.editorCanvas as HTMLCanvasElement, {
         backgroundColor: '#222222',
         preserveObjectStacking: true,
         fireRightClick: true,
@@ -470,7 +457,7 @@ export default defineComponent({
       });
 
       // Attach the mouse down event to start panning
-      this.canvas.on('mouse:down', (opt: fabric.IEvent) => {
+      this.canvas.on('mouse:down', () => {
         if (panningEnabled) {
           panning = true;
         }
@@ -491,22 +478,27 @@ export default defineComponent({
 
       // Handle incoming frame message.
       window.addEventListener('message', async (event) => {
-        const message = event.data as IncomingFrameMessage;
-        if (message.modalId === undefined) {
-          console.debug(`Unrecognized frame message received: ${JSON.stringify(message)}.`);
+        if (!isTrustedFrameEvent(event, window.parent, this.parentOrigin)) {
+          console.debug('Ignored an untrusted or malformed frame message.');
           return;
         }
-        await this.waitWindowVisible();
-        this.resizeHTMLCanvas();
-        this.loadCanvasFromFrameMessage(message);
+        try {
+          await this.waitWindowVisible();
+          this.resizeHTMLCanvas();
+          await this.loadCanvasFromFrameMessage(event.data);
+        } catch (ex: any) {
+          this.$notify({ title: 'Error', desc: ex.message ?? String(ex) });
+        }
       });
 
       // Inform the parent frame that iframe is ready to receive message.
-      if (window.self != window.top) {
+      if (window.self != window.top && this.parentOrigin !== null) {
         window.parent.postMessage({
           ready: true
-        }, '*');
+        }, this.parentOrigin);
       }
+
+      this.loadCanvasFromRequestParams();
     });
   },
   methods: {
@@ -731,39 +723,73 @@ export default defineComponent({
       this.canvas.zoomToPoint(center, scaleFactor * zoomed_size);
     },
     handleBeforeUploadImage(file: Blob) {
+      const uploadFile = file as unknown as LockableUploadFile;
+      uploadFile.locked = false;
+      uploadFile.scale = 1.0;
       const reader = new FileReader();
       reader.onload = (e) => {
-        this.loadBackgroundImageFromURL(e.target!.result! as string);
+        this.loadBackgroundImageFromURL(e.target!.result! as string, uploadFile)
+          .catch((ex) => this.$notify({ title: 'Error', desc: ex.message ?? String(ex) }));
       };
+      reader.onerror = () => this.$notify({ title: 'Error', desc: 'Failed to read the background image.' });
       reader.readAsDataURL(file);
 
       // Return false to prevent the default upload behavior
       return false;
     },
-    loadBackgroundImageFromURL(url: string) {
-      fabric.Image.fromURL(url, (img) => {
-        img.set({
-          left: this.openposeCanvas.left,
-          top: this.openposeCanvas.top,
-          scaleX: 1.0,
-          scaleY: 1.0,
-          opacity: 0.5,
-          hasControls: true,
-          hasBorders: true,
-          lockScalingX: false,
-          lockScalingY: false,
+    loadBackgroundImageFromURL(url: string, uploadFile: LockableUploadFile): Promise<void> {
+      return new Promise((resolve, reject) => {
+        fabric.Image.fromURL(url, (img: fabric.Image) => {
+          if (!img) {
+            reject(new Error('Failed to load the background image.'));
+            return;
+          }
+          img.set({
+            left: this.openposeCanvas.left,
+            top: this.openposeCanvas.top,
+            scaleX: 1.0,
+            scaleY: 1.0,
+            opacity: 0.5,
+            hasControls: true,
+            hasBorders: true,
+            lockScalingX: false,
+            lockScalingY: false,
+          });
+
+          this.canvas?.add(img);
+          // Image should not block skeleton.
+          this.canvas?.moveTo(img, 1);
+          this.canvas?.renderAll();
+
+          uploadFile.locked = false;
+          uploadFile.scale = 1.0;
+          this.canvasImageMap.set(uploadFile.uid, img);
+          resolve();
         });
-
-        this.canvas?.add(img);
-        // Image should not block skeleton.
-        this.canvas?.moveTo(img, 1);
-        this.canvas?.renderAll();
-
-        const uploadFile = this.uploadedImageList[this.uploadedImageList.length - 1];
-        uploadFile.locked = false;
-        uploadFile.scale = 1.0;
-        this.canvasImageMap.set(uploadFile.uid, img);
       });
+    },
+    async addBackgroundImageFromURL(url: string, name: string, locked: boolean, fitCanvas: boolean) {
+      if (!url.startsWith('data:image/')) throw new Error('Background image must be an image data URL.');
+      const imageFile = {
+        locked: false,
+        scale: 1.0,
+        name,
+        uid: await calculateHash(url),
+      } as LockableUploadFile;
+      this.uploadedImageList.push(imageFile);
+      try {
+        await this.loadBackgroundImageFromURL(url, imageFile);
+        if (fitCanvas) {
+          const [imgWidth, imgHeight] = await getImageDimensionsFromDataURL(url);
+          this.scaleImage(imageFile, Math.min(this.canvasHeight / imgHeight, this.canvasWidth / imgWidth));
+        }
+        imageFile.locked = locked;
+        this.onLockedChange(imageFile, locked);
+      } catch (error) {
+        this.uploadedImageList = this.uploadedImageList.filter(file => file.uid !== imageFile.uid);
+        this.canvasImageMap.delete(imageFile.uid);
+        throw error;
+      }
     },
     isImage(file: UploadFile) {
       return /\.(jpeg|jpg|gif|png|bmp)$/i.test(file.name);
@@ -772,6 +798,7 @@ export default defineComponent({
       if (!this.canvasImageMap.has(image.uid)) return;
 
       this.canvas?.remove(toRaw(this.canvasImageMap.get(image.uid)!));
+      this.canvasImageMap.delete(image.uid);
       this.canvas?.renderAll();
     },
     scaleImage(image: LockableUploadFile, scale: number) {
@@ -906,12 +933,18 @@ export default defineComponent({
       this.uploadedImageList.splice(0); // Clear `uploadedImageList`.
       this.resetZoom();
     },
-    loadCanvasFromRequestParams() {
-      this.clearCanvas();
-      const data = window.dataFromServer;
-      if (_.isEmpty(data)) {
+    async loadCanvasFromRequestParams() {
+      let data: { image_url: string; pose: string } | null;
+      try {
+        data = readServerData(document);
+      } catch (ex: any) {
+        this.$notify({ title: 'Error', desc: ex.message ?? String(ex) });
         return;
       }
+      if (data === null) {
+        return;
+      }
+      this.clearCanvas();
 
       let poseJson: IOpenposeJson;
       try {
@@ -921,7 +954,11 @@ export default defineComponent({
         return;
       }
       this.loadPeopleFromJson(poseJson);
-      this.loadBackgroundImageFromURL(data.image_url);
+      try {
+        await this.addBackgroundImageFromURL(data.image_url, 'request input', false, false);
+      } catch (ex: any) {
+        this.$notify({ title: 'Error', desc: ex.message ?? String(ex) });
+      }
     },
     async loadCanvasFromFrameMessage(message: IncomingFrameMessage) {
       this.modalId = message.modalId;
@@ -929,7 +966,7 @@ export default defineComponent({
       this.clearCanvas();
       const openposeJson =
         message.poseURL?
-          parseDataURLtoJSON(message.poseURL) as IOpenposeJson:
+          parsePoseDataURL(message.poseURL):
           Array.isArray(message.poses!) ? message.poses![0] : message.poses!;
 
       this.canvasHeight = openposeJson.canvas_height;
@@ -938,18 +975,7 @@ export default defineComponent({
 
       // (Optional) Loads background image.
       if (message.imageURL) {
-        const imageFile = {
-          locked: false,
-          scale: 1.0,
-          name: 'controlnet input',
-          uid: await calculateHash(message.imageURL),
-        } as LockableUploadFile;
-        this.uploadedImageList.push(imageFile);
-        this.loadBackgroundImageFromURL(message.imageURL);
-        const [imgWidth, imgHeight] = await getImageDimensionsFromDataURL(message.imageURL);
-        this.scaleImage(imageFile, Math.min(this.canvasHeight / imgHeight, this.canvasWidth / imgWidth));
-        imageFile.locked = true;
-        this.onLockedChange(imageFile, true);
+        await this.addBackgroundImageFromURL(message.imageURL, 'controlnet input', true, true);
       }
     },
     getCanvasAsOpenposeJson(): IOpenposeJson {
@@ -965,13 +991,13 @@ export default defineComponent({
       } as IOpenposeJson;
     },
     sendCanvasAsFrameMessage() {
-      if (this.modalId === undefined) return;
+      if (this.modalId === undefined || this.parentOrigin === null) return;
       const poses = this.getCanvasAsOpenposeJson();
       window.parent.postMessage({
         modalId: this.modalId,
         poseURL: serializeJSONtoDataURL(poses),
         poses: poses,
-      } as OutgoingFrameMessage, '*');
+      } as OutgoingFrameMessage, this.parentOrigin);
     },
     downloadCanvasAsJson() {
       const link = document.createElement('a');
@@ -1022,7 +1048,7 @@ export default defineComponent({
     DownloadOutlined,
     OpenposeObjectPanel,
     LockSwitch,
-    Header,
+    AppHeader,
   }
 });
 </script>
@@ -1030,7 +1056,7 @@ export default defineComponent({
 <template>
   <a-row>
     <a-col :span="8" id="control-panel">
-      <Header></Header>
+      <AppHeader></AppHeader>
       <a-button v-if="modalId !== undefined" @click="sendCanvasAsFrameMessage">
         {{ $t('ui.sendPose') }}
       </a-button>
