@@ -4,16 +4,31 @@ WebUI's ControlNet extension.
 
 ## Forge Classic 2.28.1 fork
 
-The original editor was a cool and useful tool, but some details no longer
-worked reliably in my **sd-webui-forge-classic 2.28.1** setup. I migrated and
-hardened it with a little help from AI, and I hope sharing the result will be
-useful to other people in the community.
+I really liked the original editor: it is a cool, practical tool for adjusting
+a pose without having to start over. Unfortunately, it no longer worked
+correctly end to end in my **sd-webui-forge-classic 2.28.1** setup. Rather than
+leave such a useful tool behind, I migrated it and fixed the problems I found,
+with a little help from AI. I am sharing the result in the hope that it will be
+useful to other people in the community too.
 
-This fork fixes OpenPose points located exactly on the top or left canvas edge,
-preserves non-binary detector confidence values, validates iframe messages,
-and makes the frontend updater bounded, zip-slip safe, and atomic. The POST
-entry point also transports pose JSON as inert `application/json` instead of
-injecting it as executable JavaScript.
+The changes are concrete and deliberately limited to this compatibility work:
+
+- OpenPose points on the top or left canvas edge are no longer mistaken for
+  missing points;
+- non-binary detector confidence values survive editing and export;
+- the ControlNet iframe bridge validates the sender, origin, and message shape;
+- pose data received through the FastAPI page is embedded as inert JSON rather
+  than executable JavaScript;
+- background images are fully loaded before their scale and lock state are
+  applied;
+- the compiled frontend updater uses timeouts, rejects unsafe ZIP paths, and
+  replaces `dist` atomically instead of modifying a live installation in place.
+
+This is still an OpenPose **editor**, not a Krea 2 pose ControlNet model. It
+produces and edits pose JSON/previews for the ControlNet workflow; the final
+generation also requires a control model compatible with the checkpoint being
+used. The fork targets Forge Classic 2.28.1 and does not claim to make every
+WebUI, ControlNet model, or future Forge version compatible automatically.
 
 Install this Forge-compatible branch with:
 
